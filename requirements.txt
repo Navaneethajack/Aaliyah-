@@ -1,0 +1,10 @@
+streamlit
+openai
+gtts
+gspread
+oauth2client
+streamlit-mic-recorder
+SpeechRecognition
+pydub
+requests
+python-dotenv
