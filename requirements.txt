@@ -8,3 +8,4 @@ SpeechRecognition
 pydub
 requests
 python-dotenv
+tinyfish
