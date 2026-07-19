@@ -27,8 +27,8 @@ SHEET_ID = "1ZB6VyiJzpDPbSPaPhZiIPESed6RkZpdJdO2GIlO1l-A"
 def load_config():
     return {
         'app_password': os.getenv("APP_PASSWORD"),
-        'ollama_base_url': os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
-        'ollama_model': os.getenv("OLLAMA_MODEL", "llama3.3:70b"),
+        'openrouter_key': os.getenv("OPENROUTER_API_KEY"),
+        'openrouter_model': os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"),
         'tinyfish_key': os.getenv("TINYFISH_API_KEY"),
         'telegram_token': os.getenv("TELEGRAM_BOT_TOKEN"),
         'telegram_chat_id': os.getenv("TELEGRAM_CHAT_ID"),
@@ -132,8 +132,27 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== OLLAMA CLIENT ====================
-ollama_client = OpenAI(base_url=config['ollama_base_url'], api_key="ollama")
+# ==================== OPENROUTER CLIENT (FREE CLOUD LLAMA) ====================
+@st.cache_resource(show_spinner=False)
+def init_llm_client():
+    try:
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=config['openrouter_key'],
+            default_headers={"HTTP-Referer": "https://aaliyah.app", "X-Title": "Aaliyah"}
+        )
+        # Test connection
+        client.chat.completions.create(
+            model=config['openrouter_model'],
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=5
+        )
+        return client
+    except Exception as e:
+        st.error(f"LLM connection failed: {e}")
+        return None
+
+llm_client = init_llm_client()
 
 # ==================== TINYFISH ====================
 tinyfish_available = False
@@ -222,7 +241,7 @@ def detect_language(text):
     return "en"
 
 def needs_web_search(msg):
-    triggers = ["news","trending","latest","current","today","weather","temperature","stock","price","score","match","election","breaking","update","recent","happening","what is","who is","where is","when did","why is","செய்தி","समाचार","ニュース","ಸುದ್ದി","വാർത്ത"]
+    triggers = ["news","trending","latest","current","today","weather","temperature","stock","price","score","match","election","breaking","update","recent","happening","what is","who is","where is","when did","why is","செய்தி","समाचार","ニュース","ಸುದ್ದಿ","വാർത്ത"]
     return any(t in msg.lower() for t in triggers)
 
 # ==================== AUDIO & TEXT UTILS ====================
@@ -255,11 +274,18 @@ def web_search(query):
     except: return None
 
 def get_bot_response():
+    if not llm_client:
+        return "Sorry baby! No LLM available. Please check OPENROUTER_API_KEY. 😢"
     try:
-        response = ollama_client.chat.completions.create(
-            model=config['ollama_model'], messages=st.session_state.messages, temperature=0.9, max_tokens=300)
+        response = llm_client.chat.completions.create(
+            model=config['openrouter_model'],
+            messages=st.session_state.messages,
+            temperature=0.9,
+            max_tokens=300
+        )
         return response.choices[0].message.content
-    except: return "Sorry baby! Is Ollama running? 😢"
+    except Exception as e:
+        return f"Sorry baby! LLM error: {str(e)} 😢"
 
 def get_answer_with_search(query):
     results = web_search(query)
@@ -314,7 +340,7 @@ def manage_conversation_size():
 
 # ==================== UI HEADER ====================
 st.markdown('<div class="main-header">💖 Aaliyah – Your Girlfriend Assistant</div>', unsafe_allow_html=True)
-st.caption(f"🦙 {config['ollama_model']} | 7 Languages | 📱 Telegram | 🔐 Voice Locked")
+st.caption(f"☁️ OpenRouter Llama | 7 Languages | 📱 Telegram | 🔐 Voice Locked")
 
 # Sidebar
 with st.sidebar:
@@ -327,7 +353,7 @@ with st.sidebar:
     st.divider()
     
     with st.expander("🔍 Service Status"):
-        st.write(f"🦙 Ollama: {'✅' if config.get('ollama_base_url') else '❌'}")
+        st.write(f"☁️ LLM: {'✅' if llm_client else '❌'}")
         st.write(f"🌐 Search: {'✅' if tinyfish_available else '❌'}")
         st.write(f"📊 Sheets: {'✅' if sheets_available else '❌'}")
         st.write(f"📱 Telegram: {'✅' if config.get('telegram_token') else '❌'}")
@@ -377,11 +403,11 @@ with st.sidebar:
             st.write(s["Content"])
             if st.button("🗑️", key=f"ds{i}"): delete_story(i); st.rerun()
 
-# Status bar - FIXED
+# Status bar
 status_col1, status_col2, status_col3, status_col4, status_col5 = st.columns(5)
 
 with status_col1:
-    st.success("🦙 Llama")
+    st.success("☁️ Llama")
 
 with status_col2:
     if tinyfish_available:
