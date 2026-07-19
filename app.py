@@ -222,7 +222,7 @@ def detect_language(text):
     return "en"
 
 def needs_web_search(msg):
-    triggers = ["news","trending","latest","current","today","weather","temperature","stock","price","score","match","election","breaking","update","recent","happening","what is","who is","where is","when did","why is","செய்தி","समाचार","ニュース","ಸುದ್ದಿ","വാർത്ത"]
+    triggers = ["news","trending","latest","current","today","weather","temperature","stock","price","score","match","election","breaking","update","recent","happening","what is","who is","where is","when did","why is","செய்தி","समाचार","ニュース","ಸುದ್ದി","വാർത്ത"]
     return any(t in msg.lower() for t in triggers)
 
 # ==================== AUDIO & TEXT UTILS ====================
@@ -377,14 +377,30 @@ with st.sidebar:
             st.write(s["Content"])
             if st.button("🗑️", key=f"ds{i}"): delete_story(i); st.rerun()
 
-# Status bar
-c1,c2,c3,c4,c5 = st.columns(5)
-c1.success("🦙 Llama")
-c2.success("🌐 Search") if tinyfish_available else c2.warning("🌐 Search OFF")
-c3.success("📊 Sheets") if sheets_available else c3.warning("📊 Local")
-c4.info("🔊 VOICE" if st.session_state.voice_mode else "📝 TEXT")
-msg_count = len([m for m in st.session_state.messages if m["role"] != "system"])
-c5.info(f"💬 {msg_count}/{MAX_CHAT_MESSAGES}")
+# Status bar - FIXED
+status_col1, status_col2, status_col3, status_col4, status_col5 = st.columns(5)
+
+with status_col1:
+    st.success("🦙 Llama")
+
+with status_col2:
+    if tinyfish_available:
+        st.success("🌐 Search")
+    else:
+        st.warning("🌐 Search OFF")
+
+with status_col3:
+    if sheets_available:
+        st.success("📊 Sheets")
+    else:
+        st.warning("📊 Local")
+
+with status_col4:
+    st.info("🔊 VOICE" if st.session_state.voice_mode else "📝 TEXT")
+
+with status_col5:
+    msg_count = len([m for m in st.session_state.messages if m["role"] != "system"])
+    st.info(f"💬 {msg_count}/{MAX_CHAT_MESSAGES}")
 
 ln = {"en":"English","ta":"Tamil","ja":"Japanese","hi":"Hindi","kn":"Kannada","ml":"Malayalam","tanglish":"Tanglish"}
 st.caption(f"🌍 {ln.get(st.session_state.detected_language,'Unknown')} | Ask me anything! 💕")
