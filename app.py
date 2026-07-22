@@ -1,5 +1,5 @@
 import streamlit as st
-from openai import OpenAI
+from llama_cpp import Llama
 from gtts import gTTS
 import io
 import datetime
@@ -24,11 +24,14 @@ LOCKOUT_DURATION_SECONDS = 300
 MAX_CHAT_MESSAGES = 24
 SHEET_ID = "1ZB6VyiJzpDPbSPaPhZiIPESed6RkZpdJdO2GIlO1l-A"
 
+# Local free model — Qwen2.5-1.5B-Instruct, quantized GGUF, downloaded on
+# first run from Hugging Face and cached (no API key, no per-token cost).
+QWEN_REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+QWEN_FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
 def load_config():
     return {
         'app_password': os.getenv("APP_PASSWORD"),
-        'openrouter_key': os.getenv("OPENROUTER_API_KEY"),
-        'openrouter_model': os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"),
         'tinyfish_key': os.getenv("TINYFISH_API_KEY"),
         'telegram_token': os.getenv("TELEGRAM_BOT_TOKEN"),
         'telegram_chat_id': os.getenv("TELEGRAM_CHAT_ID"),
@@ -60,22 +63,22 @@ st.set_page_config(page_title="Aaliyah – Your GF Assistant", page_icon="💖",
 if not st.session_state.authenticated:
     st.title("🔐 Aaliyah is Locked")
     st.caption("Say or type the password to unlock me, baby! 💖")
-    
+
     if not config.get('app_password'):
         st.error("⚠️ APP_PASSWORD not set!")
         st.stop()
-    
+
     if time.time() < st.session_state.lockout_until:
         remaining = int(st.session_state.lockout_until - time.time())
         st.error(f"⏳ Locked for {remaining}s")
         st.stop()
-    
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.subheader("🎤 Voice Password")
         voice_pass = mic_recorder(start_prompt="🎤 Say Password", stop_prompt="⏹️ Stop", key="pass_voice", format="webm")
-        
+
         if voice_pass and voice_pass.get("bytes"):
             with st.spinner("🔍 Recognizing..."):
                 try:
@@ -86,7 +89,7 @@ if not st.session_state.authenticated:
                     r = sr.Recognizer()
                     with sr.AudioFile(wav) as src:
                         spoken_text = r.recognize_google(r.record(src), language="en")
-                    
+
                     if config['app_password'].lower() in spoken_text.lower():
                         st.session_state.authenticated = True
                         st.session_state.password_attempts = 0
@@ -105,7 +108,7 @@ if not st.session_state.authenticated:
                     if st.session_state.password_attempts >= MAX_PASSWORD_ATTEMPTS:
                         st.session_state.lockout_until = time.time() + LOCKOUT_DURATION_SECONDS
                         st.rerun()
-    
+
     with col2:
         st.subheader("⌨️ Type Password")
         typed_pass = st.text_input("Enter password", type="password")
@@ -122,7 +125,7 @@ if not st.session_state.authenticated:
                 if st.session_state.password_attempts >= MAX_PASSWORD_ATTEMPTS:
                     st.session_state.lockout_until = time.time() + LOCKOUT_DURATION_SECONDS
                     st.rerun()
-    
+
     st.stop()
 
 # ==================== CUSTOM CSS ====================
@@ -132,27 +135,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== OPENROUTER CLIENT (FREE CLOUD LLAMA) ====================
-@st.cache_resource(show_spinner=False)
-def init_llm_client():
-    try:
-        client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=config['openrouter_key'],
-            default_headers={"HTTP-Referer": "https://aaliyah.app", "X-Title": "Aaliyah"}
-        )
-        # Test connection
-        client.chat.completions.create(
-            model=config['openrouter_model'],
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=5
-        )
-        return client
-    except Exception as e:
-        st.error(f"LLM connection failed: {e}")
-        return None
+# ==================== LOCAL LLM (Qwen2.5-1.5B-Instruct, GGUF, free, in-process) ====================
+@st.cache_resource(show_spinner="💖 Waking Aaliyah up for the first time (downloading model, ~1GB, one-time)...")
+def load_llm():
+    return Llama.from_pretrained(
+        repo_id=QWEN_REPO_ID,
+        filename=QWEN_FILENAME,
+        n_ctx=4096,
+        n_threads=os.cpu_count() or 2,
+        verbose=False,
+    )
 
-llm_client = init_llm_client()
+llm_load_error = None
+try:
+    llm = load_llm()
+    llm_available = True
+except Exception as e:
+    llm = None
+    llm_available = False
+    llm_load_error = str(e)
 
 # ==================== TINYFISH ====================
 tinyfish_available = False
@@ -195,12 +196,13 @@ SYSTEM_PROMPT = """You are Aaliyah, a sweet, loving, AND intelligent girlfriend 
 You speak: Tamil, English, Japanese, Hindi, Kannada, Malayalam, Tanglish.
 - Always warm and affectionate, use pet names (baby, sweetie, darling, love)
 - Answer any question knowledgeably while keeping your loving tone
+- Keep replies short (2-4 sentences) unless asked to explain something in detail
 
 VOICE vs TEXT:
 - When user wants TEXT: reply "TEXT_MODE_ON"
 - When user wants VOICE: reply "VOICE_MODE_ON"
 
-ACTIONS (exact format):
+ACTIONS (exact format, only when the user clearly asks for it):
 - Search web: ```web_search {"query": "search terms"}```
 - Set reminder: ```reminder_set {"task": "what", "datetime": "YYYY-MM-DD HH:MM"}```
 - Delete reminder: ```reminder_delete {"index": 1}```
@@ -221,7 +223,7 @@ def send_telegram_notification(task, dt_str):
     try: requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=5)
     except: pass
 
-# ==================== DETECTION ====================
+# ==================== DETECTION (rule-based — small models can't be trusted for this) ====================
 def detect_text_command(msg):
     triggers = ["text","type","write","show me","message","explain","i don't understand","text only","by text","write it down","எழுது","காட்டு","புரியல","டெக்ஸ்ட்","लिखो","दिखाओ","समझ नहीं","書いて","見せて","わからない","ಬರೆ","ತೋರಿಸು","എഴുതുക","കാണിക്കുക","text pannu","type pannu","ezhuthu","puriyala"]
     return any(t in msg.lower() for t in triggers)
@@ -243,6 +245,27 @@ def detect_language(text):
 def needs_web_search(msg):
     triggers = ["news","trending","latest","current","today","weather","temperature","stock","price","score","match","election","breaking","update","recent","happening","what is","who is","where is","when did","why is","செய்தி","समाचार","ニュース","ಸುದ್ದಿ","വാർത്ത"]
     return any(t in msg.lower() for t in triggers)
+
+# ==================== REMINDER / STORY RULE-BASED PARSING ====================
+# Small local models can't reliably emit JSON action blocks, so we detect
+# these intents directly from the user's text instead of trusting the LLM.
+REMINDER_TRIGGERS = ["remind me", "set a reminder", "reminder", "நினைவூட்டு", "याद दिलाना", "リマインド"]
+STORY_TRIGGERS = ["save this story", "remember this story", "save story", "கதை சேமி", "कहानी सेव"]
+
+def try_parse_reminder(msg):
+    """Very simple 'remind me to X at YYYY-MM-DD HH:MM' / 'in N minutes/hours' parser."""
+    if not any(t in msg.lower() for t in REMINDER_TRIGGERS):
+        return None
+    m = re.search(r"remind me to (.+?) (?:at|on) (\d{4}-\d{2}-\d{2} \d{2}:\d{2})", msg, re.I)
+    if m:
+        return {"task": m.group(1).strip(), "datetime": m.group(2)}
+    m = re.search(r"remind me to (.+?) in (\d+)\s*(minute|minutes|hour|hours)", msg, re.I)
+    if m:
+        task, amount, unit = m.group(1).strip(), int(m.group(2)), m.group(3).lower()
+        delta = datetime.timedelta(hours=amount) if "hour" in unit else datetime.timedelta(minutes=amount)
+        dt = (datetime.datetime.now() + delta).strftime("%Y-%m-%d %H:%M")
+        return {"task": task, "datetime": dt}
+    return None
 
 # ==================== AUDIO & TEXT UTILS ====================
 def transcribe_audio(audio_bytes):
@@ -274,23 +297,22 @@ def web_search(query):
     except: return None
 
 def get_bot_response():
-    if not llm_client:
-        return "Sorry baby! No LLM available. Please check OPENROUTER_API_KEY. 😢"
+    if not llm_available:
+        return f"Sorry baby! My brain didn't load 😢 ({llm_load_error})"
     try:
-        response = llm_client.chat.completions.create(
-            model=config['openrouter_model'],
+        response = llm.create_chat_completion(
             messages=st.session_state.messages,
-            temperature=0.9,
-            max_tokens=300
+            temperature=0.8,
+            max_tokens=300,
         )
-        return response.choices[0].message.content
+        return response["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"Sorry baby! LLM error: {str(e)} 😢"
+        return f"Sorry baby! Something glitched 😢 ({e})"
 
 def get_answer_with_search(query):
     results = web_search(query)
     if results:
-        st.session_state.messages.append({"role":"system","content":f"Search:\n{results}\n\nAnswer in sweet girlfriend tone."})
+        st.session_state.messages.append({"role":"system","content":f"Search:\n{results}\n\nAnswer in sweet girlfriend tone, briefly."})
         return get_bot_response()
     return None
 
@@ -340,30 +362,30 @@ def manage_conversation_size():
 
 # ==================== UI HEADER ====================
 st.markdown('<div class="main-header">💖 Aaliyah – Your Girlfriend Assistant</div>', unsafe_allow_html=True)
-st.caption(f"☁️ OpenRouter Llama | 7 Languages | 📱 Telegram | 🔐 Voice Locked")
+st.caption("🧠 Qwen2.5-1.5B (local, free) | 7 Languages | 📱 Telegram | 🔐 Voice Locked")
 
 # Sidebar
 with st.sidebar:
     st.markdown('<div style="font-size:1.2rem;font-weight:600;color:#ff6b6b;">💖 Aaliyah Menu</div>', unsafe_allow_html=True)
-    
+
     if st.button("🔒 Lock Aaliyah", use_container_width=True):
         st.session_state.authenticated = False
         st.rerun()
-    
+
     st.divider()
-    
+
     with st.expander("🔍 Service Status"):
-        st.write(f"☁️ LLM: {'✅' if llm_client else '❌'}")
+        st.write(f"🧠 Local LLM: {'✅' if llm_available else '❌ ' + str(llm_load_error)}")
         st.write(f"🌐 Search: {'✅' if tinyfish_available else '❌'}")
         st.write(f"📊 Sheets: {'✅' if sheets_available else '❌'}")
         st.write(f"📱 Telegram: {'✅' if config.get('telegram_token') else '❌'}")
-    
+
     st.divider()
-    
+
     if st.button("🗑️ Clear Chat", use_container_width=True):
         st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         st.rerun()
-    
+
     if len(st.session_state.messages) > 1:
         chat_text = ""
         for m in st.session_state.messages[1:]:
@@ -373,19 +395,20 @@ with st.sidebar:
             file_name=f"aaliyah_chat_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.txt",
             mime="text/plain", use_container_width=True
         )
-    
+
     st.divider()
     st.write("• 💬 Smart Chat (7 languages)")
     st.write("• 🌐 Auto Web Search")
     st.write("• 📱 Telegram Reminders")
     st.write("• 📖 Stories & Memories")
     st.write("• 🔐 Brute-force Protection")
-    
+
     st.divider()
     st.subheader("🎤 Commands")
     st.caption("'text' / 'எழுது' → Text mode")
     st.caption("'speak' / 'பேசு' → Voice mode")
-    
+    st.caption("'remind me to X at YYYY-MM-DD HH:MM'")
+
     st.divider()
     st.subheader("⏰ Reminders")
     for i, r in enumerate(load_reminders()):
@@ -395,7 +418,7 @@ with st.sidebar:
             st.write(f"{i+1}. {icon} {r['Task']} — {r['Datetime']}")
         with c_b:
             if st.button("🗑️", key=f"dr{i}"): delete_reminder(i); st.rerun()
-    
+
     st.divider()
     st.subheader("📖 Stories")
     for i, s in enumerate(load_stories()):
@@ -404,29 +427,13 @@ with st.sidebar:
             if st.button("🗑️", key=f"ds{i}"): delete_story(i); st.rerun()
 
 # Status bar
-status_col1, status_col2, status_col3, status_col4, status_col5 = st.columns(5)
-
-with status_col1:
-    st.success("☁️ Llama")
-
-with status_col2:
-    if tinyfish_available:
-        st.success("🌐 Search")
-    else:
-        st.warning("🌐 Search OFF")
-
-with status_col3:
-    if sheets_available:
-        st.success("📊 Sheets")
-    else:
-        st.warning("📊 Local")
-
-with status_col4:
-    st.info("🔊 VOICE" if st.session_state.voice_mode else "📝 TEXT")
-
-with status_col5:
-    msg_count = len([m for m in st.session_state.messages if m["role"] != "system"])
-    st.info(f"💬 {msg_count}/{MAX_CHAT_MESSAGES}")
+c1,c2,c3,c4,c5 = st.columns(5)
+c1.success("🧠 Qwen") if llm_available else c1.error("🧠 Offline")
+c2.success("🌐 Search") if tinyfish_available else c2.warning("🌐 Search OFF")
+c3.success("📊 Sheets") if sheets_available else c3.warning("📊 Local")
+c4.info("🔊 VOICE" if st.session_state.voice_mode else "📝 TEXT")
+msg_count = len([m for m in st.session_state.messages if m["role"] != "system"])
+c5.info(f"💬 {msg_count}/{MAX_CHAT_MESSAGES}")
 
 ln = {"en":"English","ta":"Tamil","ja":"Japanese","hi":"Hindi","kn":"Kannada","ml":"Malayalam","tanglish":"Tanglish"}
 st.caption(f"🌍 {ln.get(st.session_state.detected_language,'Unknown')} | Ask me anything! 💕")
@@ -454,24 +461,30 @@ with col2: voice_input = mic_recorder(start_prompt="🎤", stop_prompt="⏹️",
 def process_input(user_text):
     detected_lang = detect_language(user_text)
     st.session_state.detected_language = detected_lang
-    
+
     if detect_text_command(user_text): st.session_state.voice_mode = False; st.success("📝 TEXT mode")
     elif detect_voice_command(user_text): st.session_state.voice_mode = True; st.success("🔊 VOICE mode")
-    
+
     st.session_state.messages.append({"role":"user","content":user_text})
     with st.chat_message("user"): st.markdown(user_text)
-    
-    if tinyfish_available and needs_web_search(user_text):
+
+    # Rule-based reminder parsing first — reliable, doesn't depend on the small model
+    reminder = try_parse_reminder(user_text)
+    if reminder:
+        add_reminder(reminder["task"], reminder["datetime"])
+        send_telegram_notification(reminder["task"], reminder["datetime"])
+        reply = f"Okay baby, I'll remind you about '{reminder['task']}' at {reminder['datetime']} 💖📱"
+    elif tinyfish_available and needs_web_search(user_text):
         with st.spinner("🔍 Searching..."):
             reply = get_answer_with_search(user_text)
             if not reply:
                 with st.spinner("💭 Thinking..."): reply = get_bot_response()
     else:
         with st.spinner("💭 Aaliyah thinking..."): reply = get_bot_response()
-    
+
     if "TEXT_MODE_ON" in reply: st.session_state.voice_mode = False; reply = reply.replace("TEXT_MODE_ON","").strip()
     if "VOICE_MODE_ON" in reply: st.session_state.voice_mode = True; reply = reply.replace("VOICE_MODE_ON","").strip()
-    
+
     if "```web_search" in reply:
         try:
             s = reply.index("```web_search")+len("```web_search")
@@ -479,7 +492,7 @@ def process_input(user_text):
             srch = get_answer_with_search(q)
             if srch: reply = srch
         except: pass
-    
+
     if "```reminder_set" in reply:
         try:
             s = reply.index("```reminder_set")+len("```reminder_set")
@@ -488,7 +501,7 @@ def process_input(user_text):
             send_telegram_notification(d["task"], d["datetime"])
             reply = f"Okay baby, I'll remind you about '{d['task']}' at {d['datetime']} 💖📱"
         except: pass
-    
+
     if "```story_store" in reply:
         try:
             s = reply.index("```story_store")+len("```story_store")
@@ -496,7 +509,7 @@ def process_input(user_text):
             add_story(d["title"], d["content"])
             reply = f"Saved '{d['title']}' in my heart 💌"
         except: pass
-    
+
     if "```reminder_delete" in reply:
         try:
             s = reply.index("```reminder_delete")+len("```reminder_delete")
@@ -504,7 +517,7 @@ def process_input(user_text):
             delete_reminder(d["index"]-1)
             reply = "Deleted that reminder, sweetie 💕"
         except: pass
-    
+
     if "```story_delete" in reply:
         try:
             s = reply.index("```story_delete")+len("```story_delete")
@@ -512,16 +525,16 @@ def process_input(user_text):
             delete_story(d["index"]-1)
             reply = "Story deleted, my love 🗑️"
         except: pass
-    
+
     if "```" in reply: reply = reply.split("```")[0].strip()
-    
+
     st.session_state.messages.append({"role":"assistant","content":reply})
     with st.chat_message("assistant"): st.markdown(reply)
-    
+
     if st.session_state.voice_mode:
         audio = text_to_speech(reply, detected_lang)
         if audio: st.audio(audio, format="audio/mp3", autoplay=True)
-    
+
     st.rerun()
 
 if user_text: process_input(user_text.strip())
