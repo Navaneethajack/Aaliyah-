@@ -1,5 +1,6 @@
 streamlit
-openai
+llama-cpp-python
+huggingface_hub
 gtts
 gspread
 oauth2client
