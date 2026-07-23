@@ -361,82 +361,42 @@ def manage_conversation_size():
         st.session_state.messages = system_msgs + other_msgs[-MAX_CHAT_MESSAGES:]
 
 # ==================== UI HEADER ====================
-st.markdown('<div class="main-header">💖 Aaliyah – Your Girlfriend Assistant</div>', unsafe_allow_html=True)
-st.caption("🧠 Qwen2.5-1.5B (local, free) | 7 Languages | 📱 Telegram | 🔐 Voice Locked")
+st.markdown('<div class="main-header">💖 Aaliyah</div>', unsafe_allow_html=True)
+if not llm_available:
+    st.error(f"🧠 Model didn't load: {llm_load_error}")
 
 # Sidebar
 with st.sidebar:
-    st.markdown('<div style="font-size:1.2rem;font-weight:600;color:#ff6b6b;">💖 Aaliyah Menu</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:1.2rem;font-weight:600;color:#ff6b6b;">💖 Aaliyah</div>', unsafe_allow_html=True)
 
-    if st.button("🔒 Lock Aaliyah", use_container_width=True):
+    if st.button("🔒 Lock", use_container_width=True):
         st.session_state.authenticated = False
         st.rerun()
-
-    st.divider()
-
-    with st.expander("🔍 Service Status"):
-        st.write(f"🧠 Local LLM: {'✅' if llm_available else '❌ ' + str(llm_load_error)}")
-        st.write(f"🌐 Search: {'✅' if tinyfish_available else '❌'}")
-        st.write(f"📊 Sheets: {'✅' if sheets_available else '❌'}")
-        st.write(f"📱 Telegram: {'✅' if config.get('telegram_token') else '❌'}")
-
-    st.divider()
 
     if st.button("🗑️ Clear Chat", use_container_width=True):
         st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         st.rerun()
 
-    if len(st.session_state.messages) > 1:
-        chat_text = ""
-        for m in st.session_state.messages[1:]:
-            chat_text += f"{m['role'].upper()}: {m['content']}\n\n"
-        st.download_button(
-            "📥 Export Chat", chat_text,
-            file_name=f"aaliyah_chat_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-            mime="text/plain", use_container_width=True
-        )
+    voice_toggle = st.toggle("🔊 Voice replies", value=st.session_state.voice_mode)
+    if voice_toggle != st.session_state.voice_mode:
+        st.session_state.voice_mode = voice_toggle
 
     st.divider()
-    st.write("• 💬 Smart Chat (7 languages)")
-    st.write("• 🌐 Auto Web Search")
-    st.write("• 📱 Telegram Reminders")
-    st.write("• 📖 Stories & Memories")
-    st.write("• 🔐 Brute-force Protection")
 
-    st.divider()
-    st.subheader("🎤 Commands")
-    st.caption("'text' / 'எழுது' → Text mode")
-    st.caption("'speak' / 'பேசு' → Voice mode")
-    st.caption("'remind me to X at YYYY-MM-DD HH:MM'")
+    with st.expander("⏰ Reminders"):
+        for i, r in enumerate(load_reminders()):
+            icon = "🔔" if r.get("Status")=="Pending" else "✅"
+            c_a, c_b = st.columns([0.8, 0.2])
+            with c_a:
+                st.write(f"{i+1}. {icon} {r['Task']} — {r['Datetime']}")
+            with c_b:
+                if st.button("🗑️", key=f"dr{i}"): delete_reminder(i); st.rerun()
 
-    st.divider()
-    st.subheader("⏰ Reminders")
-    for i, r in enumerate(load_reminders()):
-        icon = "🔔" if r.get("Status")=="Pending" else "✅"
-        c_a, c_b = st.columns([0.8, 0.2])
-        with c_a:
-            st.write(f"{i+1}. {icon} {r['Task']} — {r['Datetime']}")
-        with c_b:
-            if st.button("🗑️", key=f"dr{i}"): delete_reminder(i); st.rerun()
-
-    st.divider()
-    st.subheader("📖 Stories")
-    for i, s in enumerate(load_stories()):
-        with st.expander(s['Title']):
-            st.write(s["Content"])
-            if st.button("🗑️", key=f"ds{i}"): delete_story(i); st.rerun()
-
-# Status bar
-c1,c2,c3,c4,c5 = st.columns(5)
-c1.success("🧠 Qwen") if llm_available else c1.error("🧠 Offline")
-c2.success("🌐 Search") if tinyfish_available else c2.warning("🌐 Search OFF")
-c3.success("📊 Sheets") if sheets_available else c3.warning("📊 Local")
-c4.info("🔊 VOICE" if st.session_state.voice_mode else "📝 TEXT")
-msg_count = len([m for m in st.session_state.messages if m["role"] != "system"])
-c5.info(f"💬 {msg_count}/{MAX_CHAT_MESSAGES}")
-
-ln = {"en":"English","ta":"Tamil","ja":"Japanese","hi":"Hindi","kn":"Kannada","ml":"Malayalam","tanglish":"Tanglish"}
-st.caption(f"🌍 {ln.get(st.session_state.detected_language,'Unknown')} | Ask me anything! 💕")
+    with st.expander("📖 Stories"):
+        for i, s in enumerate(load_stories()):
+            with st.expander(s['Title']):
+                st.write(s["Content"])
+                if st.button("🗑️", key=f"ds{i}"): delete_story(i); st.rerun()
 
 # Due reminders
 for r in load_reminders():
