@@ -24,8 +24,11 @@ LOCKOUT_DURATION_SECONDS = 300
 MAX_CHAT_MESSAGES = 24
 SHEET_ID = "1ZB6VyiJzpDPbSPaPhZiIPESed6RkZpdJdO2GIlO1l-A"
 
-# Local free model — Qwen2.5-1.5B-Instruct, quantized GGUF, downloaded on
-# first run from Hugging Face and cached (no API key, no per-token cost).
+# Two-tier local models — both free, both in-process:
+# - Mini model: always loaded, handles everyday girlfriend chat (fast, small).
+# - Deep model: loaded on first "deep thinking" request, then stays cached.
+MINI_REPO_ID = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+MINI_FILENAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
 QWEN_REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
 QWEN_FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
 
@@ -135,26 +138,51 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== LOCAL LLM (Qwen2.5-1.5B-Instruct, GGUF, free, in-process) ====================
-@st.cache_resource(show_spinner="💖 Waking Aaliyah up for the first time (downloading model, ~1GB, one-time)...")
-def load_llm():
+# ==================== LOCAL LLMs (Qwen mini + Qwen deep, GGUF, free, in-process) ====================
+@st.cache_resource(show_spinner="💖 Waking Aaliyah up (downloading mini model, ~350MB, one-time)...")
+def load_mini_llm():
     return Llama.from_pretrained(
-        repo_id=QWEN_REPO_ID,
-        filename=QWEN_FILENAME,
-        n_ctx=4096,
+        repo_id=MINI_REPO_ID,
+        filename=MINI_FILENAME,
+        n_ctx=2048,
         n_threads=os.cpu_count() or 2,
         chat_format="chatml",
         verbose=False,
     )
 
-llm_load_error = None
+@st.cache_resource(show_spinner="🧠 Loading deeper thinking mode (~1GB, one-time)...")
+def load_deep_llm():
+    return Llama.from_pretrained(
+        repo_id=QWEN_REPO_ID,
+        filename=QWEN_FILENAME,
+        n_ctx=2048,
+        n_threads=os.cpu_count() or 2,
+        chat_format="chatml",
+        verbose=False,
+    )
+
+mini_llm_error = None
 try:
-    llm = load_llm()
+    mini_llm = load_mini_llm()
     llm_available = True
 except Exception as e:
-    llm = None
+    mini_llm = None
     llm_available = False
-    llm_load_error = str(e)
+    mini_llm_error = str(e)
+llm_load_error = mini_llm_error  # kept for existing error-display code below
+
+def needs_deep_thinking(msg):
+    """Heuristic: route to the bigger model only for genuinely complex asks."""
+    triggers = [
+        "explain", "why", "how does", "how do", "compare", "analyze", "advice",
+        "should i", "help me decide", "what do you think", "deep", "complicated",
+        "complex", "pros and cons", "in detail", "step by step", "philosophy",
+        "opinion", "recommend", "suggest",
+        "விளக்கு", "ஏன்", "समझाओ", "क्यों", "説明して", "なぜ",
+    ]
+    if any(t in msg.lower() for t in triggers):
+        return True
+    return len(msg.split()) > 20  # long, involved messages likely need more reasoning
 
 # ==================== TINYFISH ====================
 tinyfish_available = False
@@ -311,15 +339,25 @@ def web_search(query):
         print(f"[Aaliyah] web_search failed: {e}")
         return None
 
-def get_bot_response():
+def get_bot_response(user_text=""):
     if not llm_available:
         return f"Sorry baby! My brain didn't load 😢 ({llm_load_error})"
+
+    use_deep = needs_deep_thinking(user_text)
     try:
-        reminder = {"role": "system", "content": "Reminder: stay warm and affectionate, use a pet name, keep it short."}
-        response = llm.create_chat_completion(
+        if use_deep:
+            model = load_deep_llm()
+            reminder = {"role": "system", "content": "Reminder: think it through carefully and give a genuinely useful, well-reasoned answer, but keep your warm Aaliyah tone and use a pet name."}
+            max_tok = 500
+        else:
+            model = mini_llm
+            reminder = {"role": "system", "content": "Reminder: stay warm and affectionate, use a pet name, keep it short and casual."}
+            max_tok = 200
+
+        response = model.create_chat_completion(
             messages=st.session_state.messages + [reminder],
             temperature=0.85,
-            max_tokens=300,
+            max_tokens=max_tok,
             repeat_penalty=1.15,
         )
         return response["choices"][0]["message"]["content"]
@@ -330,7 +368,7 @@ def get_answer_with_search(query):
     results = web_search(query)
     if results:
         st.session_state.messages.append({"role":"system","content":f"Search:\n{results}\n\nAnswer in sweet girlfriend tone, briefly."})
-        return get_bot_response()
+        return get_bot_response(query)
     return None
 
 # ==================== SHEET HELPERS ====================
@@ -455,9 +493,11 @@ def process_input(user_text):
         with st.spinner("🔍 Searching..."):
             reply = get_answer_with_search(user_text)
             if not reply:
-                with st.spinner("💭 Thinking..."): reply = get_bot_response()
+                spin_text = "🧠 Thinking deeply..." if needs_deep_thinking(user_text) else "💭 Thinking..."
+                with st.spinner(spin_text): reply = get_bot_response(user_text)
     else:
-        with st.spinner("💭 Aaliyah thinking..."): reply = get_bot_response()
+        spin_text = "🧠 Thinking deeply..." if needs_deep_thinking(user_text) else "💭 Aaliyah thinking..."
+        with st.spinner(spin_text): reply = get_bot_response(user_text)
 
     if "TEXT_MODE_ON" in reply: st.session_state.voice_mode = False; reply = reply.replace("TEXT_MODE_ON","").strip()
     if "VOICE_MODE_ON" in reply: st.session_state.voice_mode = True; reply = reply.replace("VOICE_MODE_ON","").strip()
