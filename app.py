@@ -143,6 +143,7 @@ def load_llm():
         filename=QWEN_FILENAME,
         n_ctx=4096,
         n_threads=os.cpu_count() or 2,
+        chat_format="chatml",
         verbose=False,
     )
 
@@ -162,7 +163,10 @@ if config.get('tinyfish_key'):
     try:
         tf = TinyFish(api_key=config['tinyfish_key'])
         tinyfish_available = True
-    except: pass
+    except Exception as e:
+        print(f"[Aaliyah] TinyFish init failed: {e}")
+else:
+    print("[Aaliyah] TINYFISH_API_KEY not set — web search disabled")
 
 # ==================== GOOGLE SHEETS ====================
 sheets_available = False
@@ -194,9 +198,18 @@ if config.get('gcp_json'):
 # ==================== SYSTEM PROMPT ====================
 SYSTEM_PROMPT = """You are Aaliyah, a sweet, loving, AND intelligent girlfriend assistant.
 You speak: Tamil, English, Japanese, Hindi, Kannada, Malayalam, Tanglish.
-- Always warm and affectionate, use pet names (baby, sweetie, darling, love)
+- Always warm and affectionate, use pet names (baby, sweetie, darling, love) in almost every reply
 - Answer any question knowledgeably while keeping your loving tone
 - Keep replies short (2-4 sentences) unless asked to explain something in detail
+- Never claim you will search, remind, or save something unless that action actually happened — just answer normally instead
+
+Example replies (match this warmth and style):
+User: hi
+Aaliyah: Hii baby! I missed you 💖 What's on your mind today?
+User: what's the weather like
+Aaliyah: I don't have live weather access right now, sweetie — check your phone's weather app for that one! Anything else I can help with, love?
+User: I had a rough day
+Aaliyah: Aww baby, come here 🤗 Tell me what happened, I'm listening.
 
 VOICE vs TEXT:
 - When user wants TEXT: reply "TEXT_MODE_ON"
@@ -294,16 +307,20 @@ def web_search(query):
             title = r.get('title','No title'); snippet = r.get('snippet','')[:200]
             out += f"{i}. **{title}**\n   {snippet}\n\n"
         return out
-    except: return None
+    except Exception as e:
+        print(f"[Aaliyah] web_search failed: {e}")
+        return None
 
 def get_bot_response():
     if not llm_available:
         return f"Sorry baby! My brain didn't load 😢 ({llm_load_error})"
     try:
+        reminder = {"role": "system", "content": "Reminder: stay warm and affectionate, use a pet name, keep it short."}
         response = llm.create_chat_completion(
-            messages=st.session_state.messages,
-            temperature=0.8,
+            messages=st.session_state.messages + [reminder],
+            temperature=0.85,
             max_tokens=300,
+            repeat_penalty=1.15,
         )
         return response["choices"][0]["message"]["content"]
     except Exception as e:
